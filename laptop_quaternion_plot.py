@@ -12,6 +12,7 @@ pi_ip = "raspberrypi.local"
 username = "raspberrypi"
 password = "paj"
 remote_path = "/home/raspberrypi/Examensarbete/Posture-estimation-for-motorcycle-riders-using-IMU-based-systems/quaternions.txt"
+axial_angles_remote_path = "/home/raspberrypi/Examensarbete/Posture-estimation-for-motorcycle-riders-using-IMU-based-systems/axial_angles.txt"
 
 CHANNELS = [0, 2, 3]
 
@@ -65,6 +66,7 @@ class OrientationWindow(QtWidgets.QWidget):
         self.resize(1200, 900)
 
         self.latest_samples = {ch: None for ch in CHANNELS}
+        self.latest_axial_angles = {ch: None for ch in CHANNELS}
         self.axis_items = {ch: [] for ch in CHANNELS}
         self.yaw_baseline = {}
         self.next_yaw_log_t = {}
@@ -74,12 +76,36 @@ class OrientationWindow(QtWidgets.QWidget):
         self.sftp = None
 
         layout = QtWidgets.QVBoxLayout(self)
+        log_layout = QtWidgets.QHBoxLayout()
 
         self.yaw_log = QtWidgets.QPlainTextEdit()
         self.yaw_log.setReadOnly(True)
         self.yaw_log.setMaximumBlockCount(200)
         self.yaw_log.setFixedHeight(180)
-        layout.addWidget(self.yaw_log)
+        self.yaw_log.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.yaw_log.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.yaw_log.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        log_layout.addWidget(self.yaw_log)
+
+        self.angle_summary = QtWidgets.QPlainTextEdit()
+        self.angle_summary.setReadOnly(True)
+        self.angle_summary.setMaximumBlockCount(200)
+        self.angle_summary.setFixedHeight(180)
+        self.angle_summary.setFixedWidth(700)
+        self.angle_summary.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.angle_summary.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.angle_summary.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        log_layout.addWidget(self.angle_summary)
+        log_layout.setSpacing(6)
+        log_layout.setStretch(0, 3)
+        log_layout.setStretch(1, 2)
+        layout.addLayout(log_layout)
+
+        mono_font = self.font()
+        mono_font.setFamily("Menlo")
+        mono_font.setStyleHint(mono_font.StyleHint.Monospace)
+        self.yaw_log.setFont(mono_font)
+        self.angle_summary.setFont(mono_font)
 
         self.status_label = QtWidgets.QLabel("Preparing viewer...")
         layout.addWidget(self.status_label)
@@ -201,7 +227,9 @@ class OrientationWindow(QtWidgets.QWidget):
 
         try:
             with self.sftp.open(remote_path, "r") as remote_file:
-                text = remote_file.read().decode()
+                quaternion_text = remote_file.read().decode()
+            with self.sftp.open(axial_angles_remote_path, "r") as remote_file:
+                axial_text = remote_file.read().decode()
         except Exception as exc:
             self.status_label.setText(f"Read failed: {exc}")
             try:
@@ -217,7 +245,7 @@ class OrientationWindow(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(2000, self._connect_remote)
             return
 
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        lines = [line.strip() for line in quaternion_text.splitlines() if line.strip()]
         if not lines:
             self.status_label.setText("Waiting for quaternion data...")
             return
@@ -234,6 +262,8 @@ class OrientationWindow(QtWidgets.QWidget):
         except Exception as exc:
             self.status_label.setText(f"Parse failed: {exc}")
             return
+
+        self._update_axial_angle_summary(axial_text)
 
         has_new_sample = False
 
@@ -328,6 +358,59 @@ class OrientationWindow(QtWidgets.QWidget):
             f"CH{ch} | {label:>8} | yaw={yaw:8.2f} deg | drift={drift:+7.2f} deg"
         )
         self.yaw_log.appendPlainText(line)
+
+    def _update_axial_angle_summary(self, axial_text):
+        lines = [line.strip() for line in axial_text.splitlines() if line.strip()]
+        latest_angles = {ch: None for ch in CHANNELS}
+
+        for line in lines:
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 9:
+                continue
+
+            try:
+                ch = int(float(parts[0]))
+                if ch not in latest_angles:
+                    continue
+
+                epoch = float(parts[1])
+                t_rel = float(parts[2])
+                abs_angles = [float(parts[3]), float(parts[4]), float(parts[5])]
+                rel_angles = [float(parts[6]), float(parts[7]), float(parts[8])]
+            except ValueError:
+                continue
+
+            latest_angles[ch] = {
+                "epoch": epoch,
+                "t_rel": t_rel,
+                "abs": abs_angles,
+                "rel": rel_angles,
+            }
+
+        self.latest_axial_angles = latest_angles
+
+        output_lines = []
+        for index, ch in enumerate(CHANNELS):
+            sample = latest_angles[ch]
+            if index > 0:
+                output_lines.append("-----------------------------------------------------------")
+
+            if sample is None:
+                output_lines.append(f"CH{ch} | waiting for axial angles...")
+                continue
+
+            abs_z, abs_y, abs_x = sample["abs"]
+            rel_z, rel_y, rel_x = sample["rel"]
+            output_lines.append(
+                f"CH{ch} | t={sample['t_rel']:8.2f}s | "
+                f"ABS | Z={abs_z:+7.2f} | Y={abs_y:+7.2f} | X={abs_x:+7.2f} deg"
+            )
+            output_lines.append(
+                f"     |            "
+                f"REL | Z={rel_z:+7.2f} | Y={rel_y:+7.2f} | X={rel_x:+7.2f} deg"
+            )
+
+        self.angle_summary.setPlainText("\n".join(output_lines))
 
     def closeEvent(self, event):
         self.timer.stop()
