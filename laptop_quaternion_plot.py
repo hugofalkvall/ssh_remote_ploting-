@@ -14,7 +14,7 @@ password = "paj"
 remote_path = "/home/raspberrypi/Examensarbete/Posture-estimation-for-motorcycle-riders-using-IMU-based-systems/quaternions.txt"
 axial_angles_remote_path = "/home/raspberrypi/Examensarbete/Posture-estimation-for-motorcycle-riders-using-IMU-based-systems/axial_angles.txt"
 
-CHANNELS = [0, 2, 3]
+CHANNELS = [7, 2, 3]
 
 # IMU local axes
 AXIS_COLORS = [
@@ -25,7 +25,7 @@ AXIS_COLORS = [
 AXIS_LENGTH = 0.6
 
 CHANNEL_POSITIONS = {
-    0: np.array([0.0, 0.0, 1.0], dtype=float),
+    7: np.array([0.0, 0.0, 1.0], dtype=float),
     2: np.array([2.0, 0.0, 0.0], dtype=float),
     3: np.array([2.0, 0.0, 1.0], dtype=float),
 }
@@ -393,7 +393,7 @@ class OrientationWindow(QtWidgets.QWidget):
         for index, ch in enumerate(CHANNELS):
             sample = latest_angles[ch]
             if index > 0:
-                output_lines.append("-----------------------------------------------------------")
+                output_lines.append("---------------------------------------------------------------")
 
             if sample is None:
                 output_lines.append(f"CH{ch} | waiting for axial angles...")
@@ -403,11 +403,11 @@ class OrientationWindow(QtWidgets.QWidget):
             rel_z, rel_y, rel_x = sample["rel"]
             output_lines.append(
                 f"CH{ch} | t={sample['t_rel']:8.2f}s | "
-                f"ABS | Z={abs_z:+7.2f} | Y={abs_y:+7.2f} | X={abs_x:+7.2f} deg"
+                f"ABS (ZYX) =({abs_z:+6.2f}, {abs_y:+6.2f}, {abs_x:+6.2f}) deg"
             )
             output_lines.append(
-                f"     |            "
-                f"REL | Z={rel_z:+7.2f} | Y={rel_y:+7.2f} | X={rel_x:+7.2f} deg"
+                f"    |             | "
+                f"REL (ZYX) =({rel_z:+6.2f}, {rel_y:+6.2f}, {rel_x:+6.2f}) deg"
             )
 
         self.angle_summary.setPlainText("\n".join(output_lines))
