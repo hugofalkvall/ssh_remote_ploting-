@@ -1,6 +1,7 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import time
 
 mp_pose = mp.solutions.pose
 OUT_PATH = "mediapipe_angles.txt"
@@ -33,6 +34,10 @@ cap = cv2.VideoCapture(0)
 with open(OUT_PATH, "w") as f:
     pass
 
+# Samplingsfrekvens i Hz
+TARGET_HZ = 10
+frame_time = 1.0 / TARGET_HZ
+
 # Hur långt upp delningspunkten ligger mellan pelvis (0.0) och thorax (1.0)
 # Testa t.ex. 0.45–0.6 beroende på vad som ser bäst ut.
 split_ratio = 0.5
@@ -42,6 +47,8 @@ with mp_pose.Pose(
     min_tracking_confidence=0.5
 ) as pose:
 
+    program_start_time = time.time()
+    loop_start = time.time()
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -156,7 +163,7 @@ with mp_pose.Pose(
                         color_upper,
                         2
                     )
-                    f.write(f"{lower_angle:.2f},{upper_angle:.2f},{intersegment_angle:.2f}\n")
+                    f.write(f"{time.time()},{time.time() - program_start_time:.4f},{lower_angle:.2f},{upper_angle:.2f},{intersegment_angle:.2f}\n")
 
 
                 except Exception:
@@ -164,7 +171,15 @@ with mp_pose.Pose(
 
             cv2.imshow("Spine segmented in two parts", img)
 
-            if cv2.waitKey(10) & 0xFF == ord("q"):
+            # Beräkna väntetid för att hålla fast Hz
+            elapsed = time.time() - loop_start
+            sleep_time = frame_time - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            
+            loop_start = time.time()
+            
+            if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
 cap.release()
