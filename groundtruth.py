@@ -155,6 +155,11 @@ def compute_metrics(ref: np.ndarray, meas: np.ndarray) -> dict:
     }
 
 
+def filter_finite_pairs(ref: np.ndarray, meas: np.ndarray, time_axis: np.ndarray):
+    mask = np.isfinite(ref) & np.isfinite(meas) & np.isfinite(time_axis)
+    return ref[mask], meas[mask], time_axis[mask], int((~mask).sum())
+
+
 def print_metrics(label: str, m: dict) -> None:
     print(f"\n  ┌─ {label}")
     print(f"  │  Matched samples : {m['n']}")
@@ -282,6 +287,18 @@ def main():
     ch3_x_abs   = imu[3][idx_ch3,   4]          # ch3 X abs
     time_seg    = visual[idx_vis3, 1]
 
+    lower_ref, ch2_x_abs, time_lower, dropped_lower = filter_finite_pairs(
+        lower_ref, ch2_x_abs, time_lower
+    )
+    segment_ref, ch3_x_abs, time_seg, dropped_segment = filter_finite_pairs(
+        segment_ref, ch3_x_abs, time_seg
+    )
+
+    if len(lower_ref) == 0:
+        sys.exit("[ERROR] No finite matched pairs remain for ch2 after filtering NaN/Inf values.")
+    if len(segment_ref) == 0:
+        sys.exit("[ERROR] No finite matched pairs remain for ch3 after filtering NaN/Inf values.")
+
     # ── Metrics ───────────────────────────────────────────────────────
     m_lower   = compute_metrics(lower_ref,   ch2_x_abs)
     m_segment = compute_metrics(segment_ref, ch3_x_abs)
@@ -289,6 +306,8 @@ def main():
     print("\n" + "═" * 52)
     print("  ANGLE COMPARISON RESULTS")
     print("═" * 52)
+    if dropped_lower or dropped_segment:
+        print(f"  Dropped non-finite pairs : ch2={dropped_lower}, ch3={dropped_segment}")
     print_metrics("ch2 X_abs  vs  Lower Angle",   m_lower)
     print_metrics("ch3 X_abs  vs  Segment Angle", m_segment)
     print("═" * 52)
