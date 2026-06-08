@@ -24,15 +24,19 @@ Metrics per pair
 Usage
 -----
   python compare_angles.py <visual_file> <imu_file> [--max-dt 0.05]
+                           [--intervals T0_start T0_end T1_start T1_end ...]
 
-  --max-dt  Maximum allowed epoch gap (seconds) for a match to be accepted.
-            Defaults to 0.05 s (half a 50 Hz frame).
+  --max-dt     Maximum allowed epoch gap (seconds) for a match to be accepted.
+               Defaults to 0.05 s (half a 50 Hz frame).
+  --intervals  Even number of time values (seconds, relative to plot start=0)
+               defining one or more analysis intervals.
+               Example: --intervals 10 30 50 80
+               → interval 1: [10 s, 30 s], interval 2: [50 s, 80 s]
+               Metrics are computed per interval for each comparison.
 """
 
 import argparse
-import csv
 import sys
-from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -119,17 +123,16 @@ def match_by_epoch(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     For each epoch in epochs_a, find the index in epochs_b with the
-    closest epoch. Returns (idx_a, idx_b) boolean-filtered to pairs
+    closest epoch. Returns (idx_a, idx_b) filtered to pairs
     where |epoch_a - epoch_b| <= max_dt.
     """
-    idx_a, idx_b, gaps = [], [], []
+    idx_a, idx_b = [], []
     for i, ea in enumerate(epochs_a):
         j = int(np.argmin(np.abs(epochs_b - ea)))
         gap = abs(ea - epochs_b[j])
         if gap <= max_dt:
             idx_a.append(i)
             idx_b.append(j)
-            gaps.append(gap)
 
     return np.array(idx_a, dtype=int), np.array(idx_b, dtype=int)
 
@@ -169,15 +172,52 @@ def print_metrics(label: str, m: dict) -> None:
     print(f"  └  Std of diff     : {m['std']:.4f}°")
 
 
+def print_interval_metrics(label: str, intervals: list[tuple[float, float]],
+                           time: np.ndarray, ref: np.ndarray, meas: np.ndarray) -> list[dict]:
+    """Compute and print metrics for each time interval. Returns list of metric dicts."""
+    results = []
+    for i, (t_start, t_end) in enumerate(intervals):
+        mask = (time >= t_start) & (time <= t_end)
+        n = mask.sum()
+        if n == 0:
+            print(f"\n  ┌─ {label}  |  Interval {i+1}: [{t_start:.2f} s – {t_end:.2f} s]")
+            print(f"  └  (no samples in this interval)")
+            continue
+        m = compute_metrics(ref[mask], meas[mask])
+        results.append(m)
+        print(f"\n  ┌─ {label}  |  Interval {i+1}: [{t_start:.2f} s – {t_end:.2f} s]")
+        print(f"  │  Matched samples : {m['n']}")
+        print(f"  │  RMSE            : {m['rmse']:.4f}°")
+        print(f"  │  MAE             : {m['mae']:.4f}°")
+        print(f"  │  Mean error      : {m['mean_error']:+.4f}°  (+ = IMU reads higher)")
+        print(f"  └  Std of diff     : {m['std']:.4f}°")
+    return results
+
+
+def print_interval_means(label: str, metrics_list: list[dict]) -> None:
+    """Print the mean of each metric across all valid intervals."""
+    if not metrics_list:
+        return
+    keys = ["rmse", "mae", "mean_error", "std"]
+    means = {k: float(np.mean([m[k] for m in metrics_list])) for k in keys}
+    print(f"\n  ┌─ {label}  |  MEAN across {len(metrics_list)} interval(s)")
+    print(f"  │  RMSE            : {means['rmse']:.4f}°")
+    print(f"  │  MAE             : {means['mae']:.4f}°")
+    print(f"  │  Mean error      : {means['mean_error']:+.4f}°")
+    print(f"  └  Std of diff     : {means['std']:.4f}°")
+
+
 # ─────────────────────────────────────────────
 # Plotting
 # ─────────────────────────────────────────────
 
 COLORS = {
-    "visual":  "#3A86FF",
-    "imu":     "#FF6B6B",
-    "diff":    "#8338EC",
-    "zero":    "#AAAAAA",
+    "visual":        "#3A86FF",
+    "imu":           "#FF6B6B",
+    "diff":          "#8338EC",
+    "zero":          "#AAAAAA",
+    "interval_start": "#1D7FDE",   # blue  — interval start
+    "interval_end":   "#E03131",   # red   — interval end
 }
 
 
@@ -191,6 +231,7 @@ def plot_comparison(
     meas_label: str,
     ax_signal,
     ax_diff,
+    intervals: list[tuple[float, float]] | None = None,
 ) -> None:
     # Signal plot
     ax_signal.plot(time_a, ref,  color=COLORS["visual"], lw=1.5, label=ref_label)
@@ -229,6 +270,19 @@ def plot_comparison(
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7, edgecolor="#cccccc"),
     )
 
+    # Interval vertical lines
+    if intervals:
+        for i, (t_start, t_end) in enumerate(intervals):
+            label_start = f"Start {i+1}" if i == 0 else f"Start {i+1}"
+            label_end   = f"End {i+1}"   if i == 0 else f"End {i+1}"
+            for ax in [ax_signal, ax_diff]:
+                ax.axvline(t_start, color=COLORS["interval_start"], lw=1.4, ls="--",
+                           label=label_start if ax is ax_signal else None)
+                ax.axvline(t_end,   color=COLORS["interval_end"],   lw=1.4, ls="--",
+                           label=label_end   if ax is ax_signal else None)
+        # Re-draw legend on signal axes to include interval lines
+        ax_signal.legend(fontsize=7.5, loc="upper right")
+
 
 # ─────────────────────────────────────────────
 # Main
@@ -246,7 +300,32 @@ def main():
         "--save", type=str, default=None,
         help="Save plot to this file path instead of showing interactively"
     )
+    parser.add_argument(
+        "--intervals", type=float, nargs="+", default=None,
+        metavar="T",
+        help=(
+            "Even number of time values (seconds, relative to plot start=0) "
+            "defining analysis intervals. Example: --intervals 10 30 50 80 "
+            "gives [10–30 s] and [50–80 s]."
+        ),
+    )
     args = parser.parse_args()
+
+    # Validate intervals argument
+    intervals: list[tuple[float, float]] | None = None
+    if args.intervals is not None:
+        if len(args.intervals) % 2 != 0:
+            sys.exit("[ERROR] --intervals requires an even number of values "
+                     "(start/end pairs). Got: " + str(args.intervals))
+        intervals = [
+            (args.intervals[i], args.intervals[i + 1])
+            for i in range(0, len(args.intervals), 2)
+        ]
+        for k, (t0, t1) in enumerate(intervals):
+            if t0 >= t1:
+                sys.exit(f"[ERROR] Interval {k+1}: start ({t0}) must be < end ({t1}).")
+        print(f"[INFO] Analysis intervals (relative to t=0): "
+              + ", ".join(f"[{t0}–{t1} s]" for t0, t1 in intervals))
 
     print("\n[INFO] Loading files...")
     visual = load_visual(args.visual_file)
@@ -260,7 +339,7 @@ def main():
     for ch in sorted(imu):
         print(f"       IMU ch{ch} rows : {len(imu[ch])}")
 
-    # ── Match ch2 against visual ──────────────────────────────────────
+    # ── Match ch2/ch3 against visual ──────────────────────────────────
     print(f"\n[INFO] Matching by epoch (max_dt={args.max_dt} s)...")
 
     vis_epochs = visual[:, 0]
@@ -278,13 +357,13 @@ def main():
 
     # ── Extract signals ───────────────────────────────────────────────
     # ch2 X_ABS (col 4) ↔ LOWER_ANGLE (col 2)
-    lower_ref   = visual[idx_vis2, 2]           # visual lower angle
-    ch2_x_abs   = imu[2][idx_ch2,   4]          # ch2 X abs
-    time_lower  = visual[idx_vis2, 1]           # time from start (visual)
+    lower_ref   = visual[idx_vis2, 2]
+    ch2_x_abs   = imu[2][idx_ch2,   4]
+    time_lower  = visual[idx_vis2, 1]
 
     # ch3 X_ABS (col 4) ↔ SEGMENT_ANGLE (col 4)
-    segment_ref = visual[idx_vis3, 4]           # visual segment angle
-    ch3_x_abs   = imu[3][idx_ch3,   4]          # ch3 X abs
+    segment_ref = visual[idx_vis3, 4]
+    ch3_x_abs   = imu[3][idx_ch3,   4]
     time_seg    = visual[idx_vis3, 1]
 
     lower_ref, ch2_x_abs, time_lower, dropped_lower = filter_finite_pairs(
@@ -299,18 +378,39 @@ def main():
     if len(segment_ref) == 0:
         sys.exit("[ERROR] No finite matched pairs remain for ch3 after filtering NaN/Inf values.")
 
-    # ── Metrics ───────────────────────────────────────────────────────
+    # ── Normalise time axes to start at 0 ────────────────────────────
+    t0_lower = time_lower.min()
+    t0_seg   = time_seg.min()
+    time_lower = time_lower - t0_lower
+    time_seg   = time_seg   - t0_seg
+
+    # ── Global metrics ────────────────────────────────────────────────
     m_lower   = compute_metrics(lower_ref,   ch2_x_abs)
     m_segment = compute_metrics(segment_ref, ch3_x_abs)
 
     print("\n" + "═" * 52)
-    print("  ANGLE COMPARISON RESULTS")
+    print("  ANGLE COMPARISON RESULTS  (full recording)")
     print("═" * 52)
     if dropped_lower or dropped_segment:
         print(f"  Dropped non-finite pairs : ch2={dropped_lower}, ch3={dropped_segment}")
     print_metrics("ch2 X_abs  vs  Lower Angle",   m_lower)
     print_metrics("ch3 X_abs  vs  Segment Angle", m_segment)
     print("═" * 52)
+
+    # ── Per-interval metrics ──────────────────────────────────────────
+    if intervals:
+        print("\n" + "═" * 52)
+        print("  ANGLE COMPARISON RESULTS  (per interval)")
+        print("═" * 52)
+        print_interval_metrics(
+            "ch2 X_abs  vs  Lower Angle",
+            intervals, time_lower, lower_ref, ch2_x_abs,
+        )
+        print_interval_metrics(
+            "ch3 X_abs  vs  Segment Angle",
+            intervals, time_seg, segment_ref, ch3_x_abs,
+        )
+        print("═" * 52)
 
     # ── Plot ──────────────────────────────────────────────────────────
     fig = plt.figure(figsize=(14, 9))
@@ -337,6 +437,7 @@ def main():
         ax.set_facecolor("#FFFFFF")
         for spine in ax.spines.values():
             spine.set_edgecolor("#DDDDDD")
+        ax.xaxis.set_major_locator(plt.MultipleLocator(10))
 
     plot_comparison(
         time_lower, lower_ref, ch2_x_abs, m_lower,
@@ -345,6 +446,7 @@ def main():
         meas_label="IMU ch2 X_abs",
         ax_signal=ax_lower_sig,
         ax_diff=ax_lower_diff,
+        intervals=intervals,
     )
 
     plot_comparison(
@@ -354,10 +456,11 @@ def main():
         meas_label="IMU ch3 X_abs",
         ax_signal=ax_seg_sig,
         ax_diff=ax_seg_diff,
+        intervals=intervals,
     )
 
-    plt.setp(ax_lower_sig.get_xticklabels(), visible=False)
-    plt.setp(ax_seg_sig.get_xticklabels(),   visible=False)
+    ax_lower_sig.set_xlabel("Time from start (s)")
+    ax_seg_sig.set_xlabel("Time from start (s)")
 
     if args.save:
         plt.savefig(args.save, dpi=150, bbox_inches="tight")
